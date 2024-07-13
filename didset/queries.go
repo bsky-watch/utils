@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"bsky.watch/utils/aturl"
 	"bsky.watch/utils/pagination"
 	"github.com/rs/zerolog"
 
@@ -114,26 +115,40 @@ func (l *muteList) GetDIDs(ctx context.Context) (StringSet, error) {
 		Logger()
 	ctx = log.WithContext(ctx)
 
-	r := StringSet{}
-	cursor := ""
-	for {
-		resp, err := bsky.GraphGetList(ctx, l.client, cursor, 100, l.url)
-		if err != nil {
-			return nil, fmt.Errorf("app.bsky.graph.getList: %w", err)
-		}
+	u, err := aturl.Parse(l.url)
+	if err != nil {
+		return nil, err
+	}
+	did := u.Host
 
-		if len(resp.Items) == 0 {
-			break
-		}
-
-		for _, item := range resp.Items {
-			r[item.Subject.Did] = true
-		}
-
-		if resp.Cursor == nil {
-			break
-		}
-		cursor = *resp.Cursor
+	r, err := pagination.Reduce(
+		func(cursor string) (resp *comatproto.RepoListRecords_Output, nextCursor string, err error) {
+			resp, err = comatproto.RepoListRecords(ctx, l.client, "app.bsky.graph.listitem", cursor, 100, did, false, "", "")
+			if err != nil {
+				return
+			}
+			if resp.Cursor != nil {
+				nextCursor = *resp.Cursor
+			}
+			return
+		},
+		func(resp *comatproto.RepoListRecords_Output, acc StringSet) (StringSet, error) {
+			if acc == nil {
+				acc = make(StringSet)
+			}
+			for _, record := range resp.Records {
+				switch r := record.Value.Val.(type) {
+				case *bsky.GraphListitem:
+					if r.List == l.url {
+						acc[r.Subject] = true
+					}
+				}
+			}
+			return acc, nil
+		},
+	)
+	if err != nil {
+		return nil, err
 	}
 	log.Trace().Msgf("Got %d dids", len(r))
 

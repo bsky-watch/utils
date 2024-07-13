@@ -2,8 +2,6 @@ package automute
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -14,6 +12,8 @@ import (
 	"github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/xrpc"
+
+	"bsky.watch/utils/didset"
 )
 
 type List struct {
@@ -134,44 +134,12 @@ func (l *List) addToList(ctx context.Context, did string) error {
 	return err
 }
 
-// func (l *List) delete(ctx context.Context, client *xrpc.Client) error {
-// 	resp, err := comatproto.RepoDeleteRecord(ctx, client, &comatproto.RepoDeleteRecord_Input{
-// 		Collection: "app.bsky.graph.list",
-// 		Repo:       l.url.Host,
-// 		Rkey:
-// 	})
-// 	if err != nil {
-// 		log.Error().Err(err).Msgf("Failed to remove list %s", l.url.String())
-// 		return
-// 	}
-// 	log.Debug().Msgf("Removed list %s, cid=%s", l.url.String(), resp.Cid)
-// }
-
 func (l *List) refreshList(ctx context.Context) error {
-	cursor := ""
-	entries := map[string]bool{}
-	for {
-		resp, err := bsky.GraphGetList(ctx, l.client, cursor, 100, l.url.String())
-		if err != nil {
-			return fmt.Errorf("app.bsky.graph.getList: %w", err)
-		}
-
-		if len(resp.Items) == 0 {
-			break
-		}
-
-		for _, item := range resp.Items {
-			if item == nil || item.Subject == nil {
-				continue
-			}
-			entries[item.Subject.Did] = true
-		}
-
-		if resp.Cursor == nil {
-			break
-		}
-		cursor = *resp.Cursor
+	entries, err := didset.MuteList(l.client, l.url.String()).GetDIDs(ctx)
+	if err != nil {
+		return err
 	}
+
 	l.mu.Lock()
 	l.existingEntries = entries
 	l.mu.Unlock()
@@ -181,11 +149,4 @@ func (l *List) refreshList(ctx context.Context) error {
 func (l *List) Check(did string) {
 	defer recover()
 	l.checkQueue <- did
-}
-
-func getXrpcClient(c *http.Client) *xrpc.Client {
-	return &xrpc.Client{
-		Client: c,
-		Host:   "https://bsky.social",
-	}
 }

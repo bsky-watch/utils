@@ -13,8 +13,8 @@ import (
 
 	"github.com/bluesky-social/indigo/xrpc"
 
-	"github.com/uabluerail/bsky-tools/pagination"
-	"github.com/uabluerail/bsky-tools/xrpcauth"
+	"bsky.watch/utils/pagination"
+	"bsky.watch/utils/xrpcauth"
 )
 
 func main() {

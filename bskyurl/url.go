@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/uabluerail/bsky-tools/aturl"
+	"bsky.watch/utils/aturl"
 )
 
 type Target interface{}

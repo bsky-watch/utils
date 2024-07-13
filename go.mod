@@ -1,4 +1,4 @@
-module github.com/uabluerail/bsky-tools
+module bsky.watch/utils
 
 go 1.21
 

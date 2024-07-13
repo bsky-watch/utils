@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"bsky.watch/utils/pagination"
 	"github.com/rs/zerolog"
-	"github.com/uabluerail/bsky-tools/pagination"
 
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"

@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
+	"bsky.watch/utils/didset"
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
-	"github.com/uabluerail/bsky-tools/didset"
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
 

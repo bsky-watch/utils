@@ -23,6 +23,7 @@ import (
 
 type Firehose struct {
 	Hooks []Hook
+	Host  string
 
 	seq   int64
 	ident string
@@ -36,7 +37,7 @@ type Hook struct {
 }
 
 func New() *Firehose {
-	return &Firehose{ident: "bsky-tools/firehose"}
+	return &Firehose{ident: "bsky.watch/utils/firehose"}
 }
 
 func (f *Firehose) Run(ctx context.Context) error {
@@ -44,8 +45,16 @@ func (f *Firehose) Run(ctx context.Context) error {
 	log := zerolog.Ctx(ctx).With().Str("module", "firehose").Logger()
 	ctx = log.WithContext(ctx)
 
+	if f.Host == "" {
+		f.Host = "bsky.network"
+	}
+
 	for {
-		addr, _ := url.Parse("wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos")
+		addr, err := url.Parse("wss://host/xrpc/com.atproto.sync.subscribeRepos")
+		if err != nil {
+			return err
+		}
+		addr.Host = f.Host
 		if f.seq > 0 {
 			q := addr.Query()
 			q.Add("cursor", fmt.Sprint(f.seq))
@@ -105,6 +114,7 @@ func (f *Firehose) Run(ctx context.Context) error {
 							continue
 						}
 						if hook.Predicate == nil || hook.Predicate(ctx, e, op, rec) {
+							// TODO: serialize action calls to avoid any possible out-of-order invocations
 							go hook.Action(ctx, e, op, rec)
 						}
 					}

@@ -193,8 +193,10 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 	for k, v := range insert {
 		s.rkeyToEntry[k] = v
 	}
-	s.lastKnownRev = commit.Rev
-	s.lastCid = commit.Commit.String()
+	if commit.Rev > s.lastKnownRev {
+		s.lastKnownRev = commit.Rev
+		s.lastCid = commit.Commit.String()
+	}
 	if !locked {
 		s.mu.Unlock()
 	}

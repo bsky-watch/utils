@@ -2,12 +2,12 @@ package automute
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
+	"bsky.watch/utils/listserver"
 	"github.com/rs/zerolog"
 
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
@@ -17,8 +17,9 @@ import (
 )
 
 type List struct {
-	url    url.URL
-	client *xrpc.Client
+	url        url.URL
+	client     *xrpc.Client
+	listServer *listserver.Server
 
 	CheckResultExpiration time.Duration
 	ListRefreshInterval   time.Duration
@@ -31,10 +32,11 @@ type List struct {
 	checkQueue chan string
 }
 
-func New(url *url.URL, authclient *xrpc.Client) *List {
+func New(url *url.URL, authclient *xrpc.Client, listServer *listserver.Server) *List {
 	return &List{
 		url:                   *url,
 		client:                authclient,
+		listServer:            listServer,
 		existingEntries:       map[string]bool{},
 		negativeCheckCache:    map[string]time.Time{},
 		CheckResultExpiration: 24 * time.Hour,
@@ -148,30 +150,15 @@ func (l *List) addToList(ctx context.Context, did string) error {
 // }
 
 func (l *List) refreshList(ctx context.Context) error {
-	cursor := ""
-	entries := map[string]bool{}
-	for {
-		resp, err := bsky.GraphGetList(ctx, l.client, cursor, 100, l.url.String())
-		if err != nil {
-			return fmt.Errorf("app.bsky.graph.getList: %w", err)
-		}
-
-		if len(resp.Items) == 0 {
-			break
-		}
-
-		for _, item := range resp.Items {
-			if item == nil || item.Subject == nil {
-				continue
-			}
-			entries[item.Subject.Did] = true
-		}
-
-		if resp.Cursor == nil {
-			break
-		}
-		cursor = *resp.Cursor
+	s, err := l.listServer.List(l.url.String())
+	if err != nil {
+		return err
 	}
+	entries, err := s.GetDIDs(ctx)
+	if err != nil {
+		return err
+	}
+
 	l.mu.Lock()
 	l.existingEntries = entries
 	l.mu.Unlock()

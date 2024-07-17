@@ -306,6 +306,9 @@ type didSet struct {
 func (s *didSet) Contains(ctx context.Context, did string) (bool, error) {
 	s.server.mu.RLock()
 	defer s.server.mu.RUnlock()
+	if s.server.lastKnownRev == "" {
+		return false, fmt.Errorf("server not ready yet")
+	}
 
 	for _, entry := range s.server.rkeyToEntry {
 		if entry.List == s.uri {
@@ -318,6 +321,9 @@ func (s *didSet) Contains(ctx context.Context, did string) (bool, error) {
 func (s *didSet) GetDIDs(ctx context.Context) (didset.StringSet, error) {
 	s.server.mu.RLock()
 	defer s.server.mu.RUnlock()
+	if s.server.lastKnownRev == "" {
+		return nil, fmt.Errorf("server not ready yet")
+	}
 
 	r := didset.StringSet{}
 	for _, entry := range s.server.rkeyToEntry {

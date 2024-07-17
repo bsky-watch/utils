@@ -22,6 +22,7 @@ import (
 	cborgen "github.com/whyrusleeping/cbor-gen"
 
 	"bsky.watch/utils/aturl"
+	"bsky.watch/utils/didset"
 	"bsky.watch/utils/firehose"
 	"bsky.watch/utils/pagination"
 )
@@ -284,4 +285,45 @@ func (s *Server) Sync(ctx context.Context) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+func (s *Server) List(uri string) (didset.QueryableDIDSet, error) {
+	u, err := aturl.Parse(uri)
+	if err != nil {
+		return nil, err
+	}
+	if u.Host != s.did {
+		return nil, fmt.Errorf("the list does not belong to %q", s.did)
+	}
+	return &didSet{uri: uri, server: s}, nil
+}
+
+type didSet struct {
+	uri    string
+	server *Server
+}
+
+func (s *didSet) Contains(ctx context.Context, did string) (bool, error) {
+	s.server.mu.RLock()
+	defer s.server.mu.RUnlock()
+
+	for _, entry := range s.server.rkeyToEntry {
+		if entry.List == s.uri {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *didSet) GetDIDs(ctx context.Context) (didset.StringSet, error) {
+	s.server.mu.RLock()
+	defer s.server.mu.RUnlock()
+
+	r := didset.StringSet{}
+	for _, entry := range s.server.rkeyToEntry {
+		if entry.List == s.uri {
+			r[entry.Subject] = true
+		}
+	}
+	return r, nil
 }

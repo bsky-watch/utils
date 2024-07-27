@@ -161,10 +161,8 @@ func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscrib
 						log.Info().Err(fmt.Errorf("mismatch in record op and cid: %s != %s", rcid, *op.Cid))
 					}
 
-					for _, hook := range f.Hooks {
-						if hook.Predicate == nil || hook.Predicate(ctx, e, op, rec) {
-							hook.Action(ctx, e, op, rec)
-						}
+					if hook.Predicate == nil || hook.Predicate(ctx, e, op, rec) {
+						hook.Action(ctx, e, op, rec)
 					}
 				}
 			}()

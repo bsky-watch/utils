@@ -21,6 +21,8 @@ import (
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
 
+const bufferSize = 1024
+
 type Firehose struct {
 	Hooks []Hook
 	Host  string
@@ -43,10 +45,18 @@ func New() *Firehose {
 func (f *Firehose) Run(ctx context.Context) error {
 
 	log := zerolog.Ctx(ctx).With().Str("module", "firehose").Logger()
-	ctx = log.WithContext(ctx)
+	ctx, cancel := context.WithCancel(log.WithContext(ctx))
+	defer cancel()
 
 	if f.Host == "" {
 		f.Host = "bsky.network"
+	}
+
+	channels := []chan *comatproto.SyncSubscribeRepos_Commit{}
+	for i, h := range f.Hooks {
+		ch := make(chan *comatproto.SyncSubscribeRepos_Commit, bufferSize)
+		channels = append(channels, ch)
+		go f.runHook(log.With().Int("hook", i).Logger().WithContext(ctx), ch, h)
 	}
 
 	for {
@@ -67,26 +77,68 @@ func (f *Firehose) Run(ctx context.Context) error {
 			continue
 		}
 
+		sampler := &zerolog.BurstSampler{Burst: 1, Period: time.Minute}
+
 		callbacks := &events.RepoStreamCallbacks{
 			RepoCommit: func(e *comatproto.SyncSubscribeRepos_Commit) error {
-				log := log.With().
-					Int64("seq", e.Seq).
-					Bool("rebase", e.Rebase).
-					Bool("tooBig", e.TooBig).
-					Str("commit_time", e.Time).
-					Str("repo", e.Repo).
-					Str("commit", e.Commit.String()).
-					Logger()
+				f.seq = e.Seq
+				for i, ch := range channels {
+					select {
+					case ch <- e:
+					default:
+						log := log.Sample(sampler)
+						log.Warn().Int("hook", i).Msgf("Hook %d queue full", i)
+					}
+				}
+				return nil
+			},
+		}
 
+		if err := events.HandleRepoStream(ctx, conn, sequential.NewScheduler(f.ident, callbacks.EventHandler)); err != nil {
+			log.Error().Err(err).Msgf("HandleRepoStream error")
+			conn.Close()
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		time.Sleep(5 * time.Second)
+		log.Debug().Msgf("Restarting HandleRepoStream")
+	}
+
+	return ctx.Err()
+}
+
+func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscribeRepos_Commit, hook Hook) {
+	log := zerolog.Ctx(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e := <-ch:
+			if hook.Action == nil {
+				continue
+			}
+
+			log := log.With().
+				Int64("seq", e.Seq).
+				Bool("rebase", e.Rebase).
+				Bool("tooBig", e.TooBig).
+				Str("commit_time", e.Time).
+				Str("repo", e.Repo).
+				Str("commit", e.Commit.String()).
+				Logger()
+
+			func() {
 				defer func() {
 					if err := recover(); err != nil {
 						log.Error().Msgf("RepoCommit callback has panicked: %+v", err)
 					}
 				}()
-				f.seq = e.Seq
 				repo_, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(e.Blocks))
 				if err != nil {
-					return fmt.Errorf("ReadRepoFromCar: %w", err)
+					log.Error().Err(err).Msgf("ReadRepoFromCar: %s", err)
+					return
 				}
 				for _, op := range e.Ops {
 					log.Trace().Interface("op", op).Msg("Op")
@@ -110,29 +162,12 @@ func (f *Firehose) Run(ctx context.Context) error {
 					}
 
 					for _, hook := range f.Hooks {
-						if hook.Action == nil {
-							continue
-						}
 						if hook.Predicate == nil || hook.Predicate(ctx, e, op, rec) {
-							// TODO: serialize action calls to avoid any possible out-of-order invocations
-							go hook.Action(ctx, e, op, rec)
+							hook.Action(ctx, e, op, rec)
 						}
 					}
 				}
-				return nil
-			},
+			}()
 		}
-
-		if err := events.HandleRepoStream(ctx, conn, sequential.NewScheduler(f.ident, callbacks.EventHandler)); err != nil {
-			log.Error().Err(err).Msgf("HandleRepoStream error")
-			conn.Close()
-			if ctx.Err() != nil {
-				break
-			}
-		}
-		time.Sleep(5 * time.Second)
-		log.Debug().Msgf("Restarting HandleRepoStream")
 	}
-
-	return ctx.Err()
 }

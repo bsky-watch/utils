@@ -135,6 +135,7 @@ func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscrib
 				Str("commit_time", e.Time).
 				Str("repo", e.Repo).
 				Str("commit", e.Commit.String()).
+				Str("rev", e.Rev).
 				Logger()
 
 			func() {

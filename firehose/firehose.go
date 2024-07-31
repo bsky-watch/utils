@@ -139,6 +139,8 @@ func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscrib
 				Logger()
 
 			func() {
+				ctx := log.WithContext(ctx)
+
 				defer func() {
 					if err := recover(); err != nil {
 						log.Error().Msgf("RepoCommit callback has panicked: %+v", err)

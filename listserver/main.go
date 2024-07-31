@@ -198,6 +198,9 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 		return nil
 	}()
 
+	log := zerolog.Ctx(ctx)
+	log.Debug().Msgf("Adding: %+v, removing: %+v", insert, remove)
+
 	if !locked {
 		s.mu.Lock()
 	}

@@ -36,6 +36,14 @@ type Predicate func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_C
 type Hook struct {
 	Predicate Predicate
 	Action    func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, op *comatproto.SyncSubscribeRepos_RepoOp, record cbg.CBORMarshaler)
+
+	// CallPerCommit specifies if the hook expects to be called once per incoming commit.
+	// By default a commit is unwrapped and the hook is called for each Op. If this flag
+	// is set, then the hook is called just with the commit struct, op and record are not
+	// provided.
+	//
+	// Note that predicates that look at the op or record will not work properly.
+	CallPerCommit bool
 }
 
 func New() *Firehose {
@@ -135,6 +143,14 @@ func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscrib
 						log.Error().Msgf("RepoCommit callback has panicked: %+v", err)
 					}
 				}()
+
+				if hook.CallPerCommit {
+					if hook.Predicate == nil || hook.Predicate(ctx, e, &comatproto.SyncSubscribeRepos_RepoOp{Action: "commit"}, nil) {
+						hook.Action(ctx, e, nil, nil)
+					}
+					return
+				}
+
 				repo_, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(e.Blocks))
 				if err != nil {
 					log.Error().Err(err).Msgf("ReadRepoFromCar: %s", err)

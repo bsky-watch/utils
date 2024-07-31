@@ -112,7 +112,8 @@ func (s *Server) UpdateFromFirehose() firehose.Hook {
 	s.mu.Unlock()
 
 	return firehose.Hook{
-		Predicate: firehose.From(s.did),
+		CallPerCommit: true,
+		Predicate:     firehose.From(s.did),
 		Action: func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, _ *comatproto.SyncSubscribeRepos_RepoOp, _ cborgen.CBORMarshaler) {
 			log := zerolog.Ctx(ctx)
 			s.mu.Lock()
@@ -144,46 +145,58 @@ func (s *Server) UpdateFromFirehose() firehose.Hook {
 }
 
 func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, locked bool) error {
-	repo_, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(commit.Blocks))
-	if err != nil {
-		return fmt.Errorf("ReadRepoFromCar: %w", err)
-	}
-
 	insert := map[string]entry{}
 	remove := []string{}
-	for _, op := range commit.Ops {
-		parts := strings.SplitN(op.Path, "/", 2)
-		if len(parts) != 2 {
-			log.Error().Msgf("Unexpected number of parts in op.Path: %q", op.Path)
-			continue
-		}
-		if parts[0] != "app.bsky.graph.listitem" {
-			continue
-		}
-		rkey := parts[1]
 
-		switch op.Action {
-		case "create", "update":
-			_, rec, err := repo_.GetRecord(ctx, op.Path)
+	err := func() error {
+		var err error
+		var repo_ *repo.Repo
+		if len(commit.Blocks) > 0 {
+			repo_, err = repo.ReadRepoFromCar(ctx, bytes.NewReader(commit.Blocks))
 			if err != nil {
-				return fmt.Errorf("failed to get record %q: %w", op.Path, err)
+				return fmt.Errorf("ReadRepoFromCar: %w", err)
 			}
-
-			switch record := rec.(type) {
-			case *bsky.GraphListitem:
-				insert[rkey] = entry{
-					Subject: record.Subject,
-					List:    record.List,
-				}
-			default:
-				return fmt.Errorf("unexpected record type %T", record)
-			}
-		case "delete":
-			remove = append(remove, rkey)
-		default:
-			return fmt.Errorf("unknown action %q", op.Action)
 		}
-	}
+
+		for _, op := range commit.Ops {
+			parts := strings.SplitN(op.Path, "/", 2)
+			if len(parts) != 2 {
+				log.Error().Msgf("Unexpected number of parts in op.Path: %q", op.Path)
+				continue
+			}
+			if parts[0] != "app.bsky.graph.listitem" {
+				continue
+			}
+			rkey := parts[1]
+
+			switch op.Action {
+			case "create", "update":
+				if repo_ == nil {
+					return fmt.Errorf("%q op without record data (seq=%d)", op.Action, commit.Seq)
+				}
+
+				_, rec, err := repo_.GetRecord(ctx, op.Path)
+				if err != nil {
+					return fmt.Errorf("failed to get record %q: %w", op.Path, err)
+				}
+
+				switch record := rec.(type) {
+				case *bsky.GraphListitem:
+					insert[rkey] = entry{
+						Subject: record.Subject,
+						List:    record.List,
+					}
+				default:
+					return fmt.Errorf("unexpected record type %T", record)
+				}
+			case "delete":
+				remove = append(remove, rkey)
+			default:
+				return fmt.Errorf("unknown action %q", op.Action)
+			}
+		}
+		return nil
+	}()
 
 	if !locked {
 		s.mu.Lock()
@@ -202,7 +215,7 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 		s.mu.Unlock()
 	}
 
-	return nil
+	return err
 }
 
 func (s *Server) Sync(ctx context.Context) error {

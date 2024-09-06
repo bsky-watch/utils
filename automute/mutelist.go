@@ -78,8 +78,18 @@ func (l *List) Run(ctx context.Context) error {
 
 	refresh := time.NewTicker(l.ListRefreshInterval)
 	defer refresh.Stop()
+
+	pruneInterval := l.CheckResultExpiration / 10
+	if pruneInterval < time.Minute {
+		pruneInterval = time.Minute
+	}
+	if pruneInterval > 6*time.Hour {
+		pruneInterval = 6 * time.Hour
+	}
+	prune := time.NewTicker(pruneInterval)
+	defer prune.Stop()
+
 	for {
-		// TODO: prune negativeCheckCache
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -88,6 +98,28 @@ func (l *List) Run(ctx context.Context) error {
 			if err != nil {
 				log.Error().Err(err).Msgf("Failed to refresh the list %q", l.url.String())
 			}
+		case <-prune.C:
+			start := time.Now()
+			cutoff := start.Add(-l.CheckResultExpiration)
+
+			log.Debug().Msgf("Starting cache cleanup...")
+
+			l.mu.Lock()
+			deleted := 0
+			total := len(l.negativeCheckCache)
+			for did, ts := range l.negativeCheckCache {
+				if ts.Before(cutoff) {
+					delete(l.negativeCheckCache, did)
+					deleted++
+				}
+			}
+			l.mu.Unlock()
+
+			duration := time.Since(start)
+			log.Info().Dur("duration", duration).Int("deleted", deleted).
+				Msgf("Cache cleanup done. It took %s and deleted %d out of %d entries",
+					duration, deleted, total)
+
 		case did := <-l.checkQueue:
 			skip := func(did string) bool {
 				l.mu.Lock()

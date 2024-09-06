@@ -77,6 +77,7 @@ func (l *List) Run(ctx context.Context) error {
 	}
 
 	refresh := time.NewTicker(l.ListRefreshInterval)
+	defer refresh.Stop()
 	for {
 		// TODO: prune negativeCheckCache
 		select {

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imax9000/errors"
+
 	"bsky.watch/utils/listserver"
 	"github.com/rs/zerolog"
 
@@ -15,6 +17,18 @@ import (
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/xrpc"
 )
+
+type TransientError struct {
+	Err error
+}
+
+func (err *TransientError) Unwrap() error {
+	return err.Err
+}
+
+func (err *TransientError) Error() string {
+	return err.Err.Error()
+}
 
 type List struct {
 	url        url.URL
@@ -96,7 +110,9 @@ func (l *List) Run(ctx context.Context) error {
 				}
 				add, err := l.Callback(ctx, l.client, did)
 				if err != nil {
-					log.Error().Err(err).Msgf("Failed to check if a user should be added to the list")
+					if _, ok := errors.As[*TransientError](err); !ok {
+						log.Error().Err(err).Msgf("Failed to check if a user should be added to the list")
+					}
 					return
 				}
 

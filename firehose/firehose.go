@@ -154,6 +154,10 @@ func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscrib
 					return
 				}
 
+				if len(e.Blocks) == 0 {
+					// TODO: allow for the hook to be invoked in this case.
+					return
+				}
 				repo_, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(e.Blocks))
 				if err != nil {
 					log.Error().Err(err).Msgf("ReadRepoFromCar: %s", err)

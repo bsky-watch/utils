@@ -2,6 +2,7 @@ package automute
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sync"
@@ -92,9 +93,11 @@ func (l *List) Run(ctx context.Context) error {
 				l.mu.Lock()
 				defer l.mu.Unlock()
 				if l.existingEntries[did] {
+					requestCache.WithLabelValues(l.url.String(), "hit", "true").Inc()
 					return true
 				}
 				if time.Since(l.negativeCheckCache[did]) < l.CheckResultExpiration {
+					requestCache.WithLabelValues(l.url.String(), "hit", "false").Inc()
 					return true
 				}
 				return false
@@ -112,6 +115,9 @@ func (l *List) Run(ctx context.Context) error {
 				if err != nil {
 					if _, ok := errors.As[*TransientError](err); !ok {
 						log.Error().Err(err).Msgf("Failed to check if a user should be added to the list")
+						requestCache.WithLabelValues(l.url.String(), "miss", "callback_error").Inc()
+					} else {
+						requestCache.WithLabelValues(l.url.String(), "miss", "transient_error").Inc()
 					}
 					return
 				}
@@ -120,6 +126,7 @@ func (l *List) Run(ctx context.Context) error {
 					err := l.addToList(ctx, did)
 					if err != nil {
 						log.Error().Err(err).Msgf("Failed to add %q to the list %s", did, l.url.String())
+						requestCache.WithLabelValues(l.url.String(), "miss", "update_error").Inc()
 						return
 					}
 					log.Debug().Msgf("Added %q to the list %s", did, l.url.String())
@@ -130,8 +137,11 @@ func (l *List) Run(ctx context.Context) error {
 					l.existingEntries[did] = true
 				} else {
 					l.negativeCheckCache[did] = time.Now()
+					negativeCacheSize.WithLabelValues(l.url.String()).Set(float64(len(l.negativeCheckCache)))
 				}
 				l.mu.Unlock()
+
+				requestCache.WithLabelValues(l.url.String(), "miss", fmt.Sprintf("%t", add)).Inc()
 			}(did)
 		}
 	}

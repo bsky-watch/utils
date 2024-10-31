@@ -34,6 +34,7 @@ type Firehose struct {
 type Predicate func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, op *comatproto.SyncSubscribeRepos_RepoOp, record cbg.CBORMarshaler) bool
 
 type Hook struct {
+	Name      string
 	Predicate Predicate
 	Action    func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, op *comatproto.SyncSubscribeRepos_RepoOp, record cbg.CBORMarshaler)
 
@@ -95,7 +96,7 @@ func (f *Firehose) Run(ctx context.Context) error {
 					case ch <- e:
 					default:
 						log := log.Sample(sampler)
-						log.Warn().Int("hook", i).Msgf("Hook %d queue full", i)
+						log.Warn().Int("hook", i).Msgf("Hook %d (%s) queue full", i, f.Hooks[i].Name)
 					}
 				}
 				return nil

@@ -24,8 +24,9 @@ import (
 const bufferSize = 1024
 
 type Firehose struct {
-	Hooks []Hook
-	Host  string
+	Hooks    []Hook
+	Host     string
+	StartSeq int64
 
 	seq   int64
 	ident string
@@ -59,6 +60,9 @@ func (f *Firehose) Run(ctx context.Context) error {
 
 	if f.Host == "" {
 		f.Host = "bsky.network"
+	}
+	if f.StartSeq > 0 {
+		f.seq = f.StartSeq
 	}
 
 	channels := []chan *comatproto.SyncSubscribeRepos_Commit{}

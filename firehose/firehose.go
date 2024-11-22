@@ -90,11 +90,16 @@ func (f *Firehose) Run(ctx context.Context) error {
 			continue
 		}
 
+		heartbeat := f.closeIfIdle(ctx, conn)
 		sampler := &zerolog.BurstSampler{Burst: 1, Period: time.Minute}
 
 		callbacks := &events.RepoStreamCallbacks{
 			RepoCommit: func(e *comatproto.SyncSubscribeRepos_Commit) error {
 				f.seq = e.Seq
+				select {
+				case heartbeat <- struct{}{}:
+				default:
+				}
 				for i, ch := range channels {
 					select {
 					case ch <- e:
@@ -196,4 +201,31 @@ func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscrib
 			}()
 		}
 	}
+}
+
+func (f *Firehose) closeIfIdle(ctx context.Context, conn *websocket.Conn) chan struct{} {
+	log := zerolog.Ctx(ctx)
+	ch := make(chan struct{}, 1)
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		heartbeat := time.Now()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				heartbeat = time.Now()
+			case <-ticker.C:
+				if time.Since(heartbeat) > 5*time.Minute {
+					log.Error().Msgf("firehose is idling for too long, disconnecting")
+					conn.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	return ch
 }

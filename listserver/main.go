@@ -299,6 +299,8 @@ func (s *Server) Sync(ctx context.Context) error {
 }
 
 func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
+	log := zerolog.Ctx(ctx)
+
 	status, err := comatproto.SyncGetLatestCommit(ctx, s.client, did)
 	if err != nil {
 		return fmt.Errorf("com.atproto.sync.getLatestCommit: %w", err)
@@ -370,6 +372,7 @@ func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
 	state.initQueue = nil
 
 	state.Unlock()
+	log.Info().Msgf("Lists from account %q synced successfully", did)
 
 	return nil
 }

@@ -27,6 +27,7 @@ import (
 	"bsky.watch/utils/didset"
 	"bsky.watch/utils/firehose"
 	"bsky.watch/utils/pagination"
+	"bsky.watch/utils/xrpcauth"
 )
 
 type Request struct {
@@ -336,7 +337,7 @@ func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
 		return fmt.Errorf("no pds specified")
 	}
 
-	client := s.client
+	client := xrpcauth.NewAnonymousClient(ctx)
 	client.Host = pds
 
 	status, err := comatproto.SyncGetLatestCommit(ctx, client, did)

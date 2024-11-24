@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -32,7 +33,15 @@ type Request struct {
 }
 
 type Response struct {
-	Subject   string            `json:"subject"`
+	Subject string                               `json:"subject"`
+	Results map[string]ResponseFromSingleAccount `json:"results"`
+
+	Listitems map[string]string `json:"listitems,omitempty"` // Deprecated
+	Rev       string            `json:"rev,omitempty"`       // Deprecated
+	Cid       string            `json:"cid,omitempty"`       // Deprecated
+}
+
+type ResponseFromSingleAccount struct {
 	Listitems map[string]string `json:"listitems"`
 	Rev       string            `json:"rev"`
 	Cid       string            `json:"cid"`
@@ -50,24 +59,33 @@ type entry struct {
 // *before* calling Sync().
 type Server struct {
 	client *xrpc.Client
-	did    string
 
 	handler http.HandlerFunc
 
-	mu                   sync.RWMutex
+	// Not supposed to change after initialization, so no need for locking.
+	state map[string]*accountState
+
+	mu                   sync.Mutex
 	firehoseHookReturned bool
-	lastKnownRev         string
-	lastCid              string
+}
+
+type accountState struct {
+	sync.RWMutex
+	lastKnownRev string
+	lastCid      string
 	// Don't try to do anything smart yet, just iterating over the map
 	// should be fast enough for now.
 	rkeyToEntry map[string]entry
 	initQueue   []*comatproto.SyncSubscribeRepos_Commit
 }
 
-func New(client *xrpc.Client, did string) *Server {
+func New(client *xrpc.Client, did ...string) *Server {
 	s := &Server{
 		client: client,
-		did:    did,
+		state:  map[string]*accountState{},
+	}
+	for _, d := range did {
+		s.state[d] = &accountState{}
 	}
 	s.handler = convreq.Wrap(s.serveHTTP)
 	return s
@@ -85,23 +103,38 @@ func (s *Server) serveHTTP(ctx context.Context, req *http.Request) convreq.HttpR
 	}
 
 	result := &Response{
-		Subject:   input.Subject,
-		Listitems: map[string]string{},
+		Subject: input.Subject,
+		Results: map[string]ResponseFromSingleAccount{},
 	}
 
-	s.mu.RLock()
-	if s.lastKnownRev == "" {
-		s.mu.RUnlock()
-		return respond.TooEarly("server not ready yet")
-	}
-	for rkey, entry := range s.rkeyToEntry {
-		if entry.Subject == input.Subject {
-			result.Listitems[rkey] = entry.List
+	for did, state := range s.state {
+		r := ResponseFromSingleAccount{
+			Listitems: map[string]string{},
+		}
+
+		state.RLock()
+		if state.lastKnownRev == "" {
+			state.RUnlock()
+			return respond.TooEarly("server not ready yet")
+		}
+		for rkey, entry := range state.rkeyToEntry {
+			if entry.Subject == input.Subject {
+				result.Listitems[rkey] = entry.List
+			}
+		}
+		r.Rev = state.lastKnownRev
+		r.Cid = state.lastCid
+		state.RUnlock()
+
+		result.Results[did] = r
+
+		// Backwards compatibility.
+		if len(s.state) == 1 {
+			result.Listitems = r.Listitems
+			result.Rev = r.Rev
+			result.Cid = r.Cid
 		}
 	}
-	result.Rev = s.lastKnownRev
-	result.Cid = s.lastCid
-	s.mu.RUnlock()
 
 	return respond.JSON(result)
 }
@@ -111,12 +144,20 @@ func (s *Server) UpdateFromFirehose() firehose.Hook {
 	s.firehoseHookReturned = true
 	s.mu.Unlock()
 
+	predicates := []firehose.Predicate{}
+	for did := range s.state {
+		predicates = append(predicates, firehose.From(did))
+	}
+
 	return firehose.Hook{
 		CallPerCommit: true,
-		Predicate:     firehose.From(s.did),
+		Predicate:     firehose.AnyOf(predicates...),
 		Action: func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, _ *comatproto.SyncSubscribeRepos_RepoOp, _ cborgen.CBORMarshaler) {
 			log := zerolog.Ctx(ctx)
-			s.mu.Lock()
+
+			server := s
+			s := server.state[commit.Repo]
+			s.Lock()
 			startingUp := false
 			alreadyProcessed := false
 			missingPreviousCommit := false
@@ -128,7 +169,7 @@ func (s *Server) UpdateFromFirehose() firehose.Hook {
 			} else if commit.Since != nil && *commit.Since != s.lastKnownRev {
 				missingPreviousCommit = true
 			}
-			s.mu.Unlock()
+			s.Unlock()
 			if startingUp || alreadyProcessed {
 				return
 			}
@@ -136,7 +177,7 @@ func (s *Server) UpdateFromFirehose() firehose.Hook {
 				log.Error().Msgf("We somehow missed the previous commit %q. List memberships may be inaccurate.", *commit.Since)
 			}
 
-			if err := s.processCommit(ctx, commit, false); err != nil {
+			if err := server.processCommit(ctx, commit, false); err != nil {
 				log.Error().Err(err).Msgf("Failed to process commit %q: %s", commit.Rev, err)
 				return
 			}
@@ -201,18 +242,19 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 	log := zerolog.Ctx(ctx)
 	log.Debug().Msgf("Adding: %+v, removing: %+v", insert, remove)
 
+	state := s.state[commit.Repo]
 	if !locked {
 		s.mu.Lock()
 	}
 	for _, rkey := range remove {
-		delete(s.rkeyToEntry, rkey)
+		delete(state.rkeyToEntry, rkey)
 	}
 	for k, v := range insert {
-		s.rkeyToEntry[k] = v
+		state.rkeyToEntry[k] = v
 	}
-	if commit.Rev > s.lastKnownRev {
-		s.lastKnownRev = commit.Rev
-		s.lastCid = commit.Commit.String()
+	if commit.Rev > state.lastKnownRev {
+		state.lastKnownRev = commit.Rev
+		state.lastCid = commit.Commit.String()
 	}
 	if !locked {
 		s.mu.Unlock()
@@ -229,7 +271,35 @@ func (s *Server) Sync(ctx context.Context) error {
 		return fmt.Errorf("must connect to firehose before calling Sync()")
 	}
 
-	status, err := comatproto.SyncGetLatestCommit(ctx, s.client, s.did)
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(s.state))
+
+	for did := range s.state {
+		wg.Add(1)
+		go func(did string) {
+			defer wg.Done()
+
+			errCh <- s.syncSingleAccount(ctx, did)
+		}(did)
+	}
+
+	wg.Wait()
+
+	errs := []error{}
+	for err := range errCh {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
+	status, err := comatproto.SyncGetLatestCommit(ctx, s.client, did)
 	if err != nil {
 		return fmt.Errorf("com.atproto.sync.getLatestCommit: %w", err)
 	}
@@ -243,7 +313,7 @@ func (s *Server) Sync(ctx context.Context) error {
 	entries, err := pagination.Reduce(
 		// fetch
 		func(cursor string) (*comatproto.RepoListRecords_Output, string, error) {
-			resp, err := comatproto.RepoListRecords(ctx, s.client, "app.bsky.graph.listitem", cursor, 100, s.did, false, "", "")
+			resp, err := comatproto.RepoListRecords(ctx, s.client, "app.bsky.graph.listitem", cursor, 100, did, false, "", "")
 			cursor = ""
 			if resp != nil && resp.Cursor != nil {
 				cursor = *resp.Cursor
@@ -280,23 +350,24 @@ func (s *Server) Sync(ctx context.Context) error {
 		return fmt.Errorf("failed to fetch listitems: %w", err)
 	}
 
-	s.mu.Lock()
-	s.rkeyToEntry = entries
-	s.lastKnownRev = status.Rev
-	s.lastCid = status.Cid
+	state := s.state[did]
+	state.Lock()
+	state.rkeyToEntry = entries
+	state.lastKnownRev = status.Rev
+	state.lastCid = status.Cid
 
-	slices.SortFunc(s.initQueue, func(a, b *comatproto.SyncSubscribeRepos_Commit) int {
+	slices.SortFunc(state.initQueue, func(a, b *comatproto.SyncSubscribeRepos_Commit) int {
 		return cmp.Compare(a.Rev, b.Rev)
 	})
-	for _, commit := range s.initQueue {
-		if commit.Rev <= s.lastKnownRev {
+	for _, commit := range state.initQueue {
+		if commit.Rev <= state.lastKnownRev {
 			continue
 		}
 		if err := s.processCommit(ctx, commit, true); err != nil {
 			return err
 		}
 	}
-	s.initQueue = nil
+	state.initQueue = nil
 
 	s.mu.Unlock()
 
@@ -308,25 +379,25 @@ func (s *Server) List(uri string) (didset.QueryableDIDSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Host != s.did {
-		return nil, fmt.Errorf("the list does not belong to %q", s.did)
+	if s.state[u.Host] == nil {
+		return nil, fmt.Errorf("%q is not tracked by this server", u.Host)
 	}
-	return &didSet{uri: uri, server: s}, nil
+	return &didSet{uri: uri, state: s.state[u.Host]}, nil
 }
 
 type didSet struct {
-	uri    string
-	server *Server
+	uri   string
+	state *accountState
 }
 
 func (s *didSet) Contains(ctx context.Context, did string) (bool, error) {
-	s.server.mu.RLock()
-	defer s.server.mu.RUnlock()
-	if s.server.lastKnownRev == "" {
+	s.state.RLock()
+	defer s.state.RUnlock()
+	if s.state.lastKnownRev == "" {
 		return false, fmt.Errorf("server not ready yet")
 	}
 
-	for _, entry := range s.server.rkeyToEntry {
+	for _, entry := range s.state.rkeyToEntry {
 		if entry.List == s.uri {
 			return true, nil
 		}
@@ -335,14 +406,14 @@ func (s *didSet) Contains(ctx context.Context, did string) (bool, error) {
 }
 
 func (s *didSet) GetDIDs(ctx context.Context) (didset.StringSet, error) {
-	s.server.mu.RLock()
-	defer s.server.mu.RUnlock()
-	if s.server.lastKnownRev == "" {
+	s.state.RLock()
+	defer s.state.RUnlock()
+	if s.state.lastKnownRev == "" {
 		return nil, fmt.Errorf("server not ready yet")
 	}
 
 	r := didset.StringSet{}
-	for _, entry := range s.server.rkeyToEntry {
+	for _, entry := range s.state.rkeyToEntry {
 		if entry.List == s.uri {
 			r[entry.Subject] = true
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -305,7 +306,40 @@ func (s *Server) Sync(ctx context.Context) error {
 func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
 	log := zerolog.Ctx(ctx)
 
-	status, err := comatproto.SyncGetLatestCommit(ctx, s.client, did)
+	resp, err := http.Get("https://plc.directory/" + did)
+	if err != nil {
+		return fmt.Errorf("querying plc: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("plc returned %s", resp.Status)
+	}
+
+	var didDoc struct {
+		Service []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Endpoint string `json:"serviceEndpoint"`
+		} `json:"service"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&didDoc); err != nil {
+		return fmt.Errorf("parsing plc response: %w", err)
+	}
+	var pds string
+	for _, service := range didDoc.Service {
+		if service.ID == "#atproto_pds" {
+			pds = service.Endpoint
+			break
+		}
+	}
+	if pds == "" {
+		return fmt.Errorf("no pds specified")
+	}
+
+	client := s.client
+	client.Host = pds
+
+	status, err := comatproto.SyncGetLatestCommit(ctx, client, did)
 	if err != nil {
 		return fmt.Errorf("com.atproto.sync.getLatestCommit: %w", err)
 	}
@@ -319,7 +353,7 @@ func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
 	entries, err := pagination.Reduce(
 		// fetch
 		func(cursor string) (*comatproto.RepoListRecords_Output, string, error) {
-			resp, err := comatproto.RepoListRecords(ctx, s.client, "app.bsky.graph.listitem", cursor, 100, did, false, "", "")
+			resp, err := comatproto.RepoListRecords(ctx, client, "app.bsky.graph.listitem", cursor, 100, did, false, "", "")
 			cursor = ""
 			if resp != nil && resp.Cursor != nil {
 				cursor = *resp.Cursor

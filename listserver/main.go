@@ -264,6 +264,8 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 }
 
 func (s *Server) Sync(ctx context.Context) error {
+	log := zerolog.Ctx(ctx)
+
 	s.mu.Lock()
 	ok := s.firehoseHookReturned
 	s.mu.Unlock()
@@ -279,6 +281,7 @@ func (s *Server) Sync(ctx context.Context) error {
 		go func(did string) {
 			defer wg.Done()
 
+			log.Info().Msgf("Starting sync of lists from accounts %q", did)
 			errCh <- s.syncSingleAccount(ctx, did)
 		}(did)
 	}

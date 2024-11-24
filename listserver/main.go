@@ -284,6 +284,7 @@ func (s *Server) Sync(ctx context.Context) error {
 	}
 
 	wg.Wait()
+	close(errCh)
 
 	errs := []error{}
 	for err := range errCh {

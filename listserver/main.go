@@ -244,7 +244,7 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 
 	state := s.state[commit.Repo]
 	if !locked {
-		s.mu.Lock()
+		state.Lock()
 	}
 	for _, rkey := range remove {
 		delete(state.rkeyToEntry, rkey)
@@ -257,7 +257,7 @@ func (s *Server) processCommit(ctx context.Context, commit *comatproto.SyncSubsc
 		state.lastCid = commit.Commit.String()
 	}
 	if !locked {
-		s.mu.Unlock()
+		state.Unlock()
 	}
 
 	return err

@@ -369,7 +369,7 @@ func (s *Server) syncSingleAccount(ctx context.Context, did string) error {
 	}
 	state.initQueue = nil
 
-	s.mu.Unlock()
+	state.Unlock()
 
 	return nil
 }

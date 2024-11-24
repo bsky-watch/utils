@@ -119,7 +119,7 @@ func (s *Server) serveHTTP(ctx context.Context, req *http.Request) convreq.HttpR
 		}
 		for rkey, entry := range state.rkeyToEntry {
 			if entry.Subject == input.Subject {
-				result.Listitems[rkey] = entry.List
+				r.Listitems[rkey] = entry.List
 			}
 		}
 		r.Rev = state.lastKnownRev

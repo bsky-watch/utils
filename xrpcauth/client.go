@@ -105,7 +105,7 @@ func NewAnonymousClient(ctx context.Context) *xrpc.Client {
 func NewClientWithTokenSource(ctx context.Context, source oauth2.TokenSource) *xrpc.Client {
 	r := &xrpc.Client{
 		Client: oauth2.NewClient(ctx, source),
-		Host:   "https://api.bsky.app",
+		Host:   "https://bsky.social",
 	}
 	tr, ok := r.Client.Transport.(*oauth2.Transport)
 	if ok {

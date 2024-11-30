@@ -37,6 +37,8 @@ func DetermineTarget(s string) (Target, error) {
 			switch pathParts[0] {
 			case "app.bsky.feed.post":
 				return &Post{Profile: u.Host, Rkey: pathParts[1]}, nil
+			default:
+				return &SomeRecord{Profile: u.Host, Collection: pathParts[0], Rkey: pathParts[1]}, nil
 			}
 		}
 	case "http", "https":
@@ -77,3 +79,11 @@ type Post struct {
 }
 
 func (p *Post) GetProfile() string { return p.Profile }
+
+type SomeRecord struct {
+	Profile    string
+	Collection string
+	Rkey       string
+}
+
+func (r *SomeRecord) GetProfile() string { return r.Profile }

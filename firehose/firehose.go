@@ -155,6 +155,7 @@ func (f *Firehose) runHook(ctx context.Context, ch chan event, hook Hook) {
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return
 		case e := <-ch:
 			switch {

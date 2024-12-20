@@ -72,11 +72,18 @@ func (f *Firehose) Run(ctx context.Context) error {
 		f.seq = f.StartSeq
 	}
 
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
 	channels := []chan event{}
 	for i, h := range f.Hooks {
 		ch := make(chan event, bufferSize)
 		channels = append(channels, ch)
-		go f.runHook(log.With().Int("hook", i).Logger().WithContext(ctx), ch, h)
+		wg.Add(1)
+		go func(i int, h Hook) {
+			f.runHook(log.With().Int("hook", i).Logger().WithContext(ctx), ch, h)
+			wg.Done()
+		}(i, h)
 	}
 
 	for {

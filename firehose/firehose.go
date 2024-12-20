@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -35,9 +36,10 @@ type Firehose struct {
 type Predicate func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, op *comatproto.SyncSubscribeRepos_RepoOp, record cbg.CBORMarshaler) bool
 
 type Hook struct {
-	Name      string
-	Predicate Predicate
-	Action    func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, op *comatproto.SyncSubscribeRepos_RepoOp, record cbg.CBORMarshaler)
+	Name          string
+	Predicate     Predicate
+	Action        func(ctx context.Context, commit *comatproto.SyncSubscribeRepos_Commit, op *comatproto.SyncSubscribeRepos_RepoOp, record cbg.CBORMarshaler)
+	OnCursorReset func(ctx context.Context)
 
 	// CallPerCommit specifies if the hook expects to be called once per incoming commit.
 	// By default a commit is unwrapped and the hook is called for each Op. If this flag
@@ -46,6 +48,11 @@ type Hook struct {
 	//
 	// Note that predicates that look at the op or record will not work properly.
 	CallPerCommit bool
+}
+
+type event struct {
+	Commit      *comatproto.SyncSubscribeRepos_Commit
+	CursorReset bool
 }
 
 func New() *Firehose {
@@ -65,9 +72,9 @@ func (f *Firehose) Run(ctx context.Context) error {
 		f.seq = f.StartSeq
 	}
 
-	channels := []chan *comatproto.SyncSubscribeRepos_Commit{}
+	channels := []chan event{}
 	for i, h := range f.Hooks {
-		ch := make(chan *comatproto.SyncSubscribeRepos_Commit, bufferSize)
+		ch := make(chan event, bufferSize)
 		channels = append(channels, ch)
 		go f.runHook(log.With().Int("hook", i).Logger().WithContext(ctx), ch, h)
 	}
@@ -102,12 +109,27 @@ func (f *Firehose) Run(ctx context.Context) error {
 				}
 				for i, ch := range channels {
 					select {
-					case ch <- e:
+					case ch <- event{Commit: e}:
 					default:
 						log := log.Sample(sampler)
 						log.Warn().Int("hook", i).Msgf("Hook %d (%s) queue full", i, f.Hooks[i].Name)
 					}
 				}
+				return nil
+			},
+			RepoInfo: func(e *comatproto.SyncSubscribeRepos_Info) error {
+				select {
+				case heartbeat <- struct{}{}:
+				default:
+				}
+				for i, ch := range channels {
+					if f.Hooks[i].OnCursorReset == nil {
+						continue
+					}
+					// Send synchronously.
+					ch <- event{CursorReset: true}
+				}
+
 				return nil
 			},
 		}
@@ -126,79 +148,93 @@ func (f *Firehose) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (f *Firehose) runHook(ctx context.Context, ch chan *comatproto.SyncSubscribeRepos_Commit, hook Hook) {
+func (f *Firehose) runHook(ctx context.Context, ch chan event, hook Hook) {
 	log := zerolog.Ctx(ctx)
 
+	var wg sync.WaitGroup
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case e := <-ch:
-			if hook.Action == nil {
-				continue
-			}
+			switch {
+			case e.Commit != nil:
+				commit := e.Commit
 
-			log := log.With().
-				Int64("seq", e.Seq).
-				Bool("rebase", e.Rebase).
-				Bool("tooBig", e.TooBig).
-				Str("commit_time", e.Time).
-				Str("repo", e.Repo).
-				Str("commit", e.Commit.String()).
-				Str("rev", e.Rev).
-				Logger()
+				if hook.Action == nil {
+					continue
+				}
 
-			func() {
-				ctx := log.WithContext(ctx)
+				log := log.With().
+					Int64("seq", commit.Seq).
+					Bool("rebase", commit.Rebase).
+					Bool("tooBig", commit.TooBig).
+					Str("commit_time", commit.Time).
+					Str("repo", commit.Repo).
+					Str("commit", commit.Commit.String()).
+					Str("rev", commit.Rev).
+					Logger()
 
-				defer func() {
-					if err := recover(); err != nil {
-						log.Error().Msgf("RepoCommit callback has panicked: %+v", err)
+				wg.Add(1)
+				func() {
+					defer wg.Done()
+					ctx := log.WithContext(ctx)
+
+					defer func() {
+						if err := recover(); err != nil {
+							log.Error().Msgf("RepoCommit callback has panicked: %+v", err)
+						}
+					}()
+
+					if hook.CallPerCommit {
+						if hook.Predicate == nil || hook.Predicate(ctx, commit, &comatproto.SyncSubscribeRepos_RepoOp{Action: "commit"}, nil) {
+							hook.Action(ctx, commit, nil, nil)
+						}
+						return
+					}
+
+					if len(commit.Blocks) == 0 {
+						// TODO: allow for the hook to be invoked in this case.
+						return
+					}
+					repo_, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(commit.Blocks))
+					if err != nil {
+						log.Error().Err(err).Msgf("ReadRepoFromCar: %s", err)
+						return
+					}
+					for _, op := range commit.Ops {
+						log.Trace().Interface("op", op).Msg("Op")
+						collection := strings.Split(op.Path, "/")[0]
+						rcid, rec, err := repo_.GetRecord(ctx, op.Path)
+						if err != nil {
+							log.Trace().Err(err).Msgf("GetRecord(%q)", op.Path)
+
+							log.Trace().Msgf("Signed commit: %+v", repo_.SignedCommit())
+							repo_.ForEach(ctx, collection, func(k string, v cid.Cid) error {
+								log.Trace().Msgf("Key: %q Cid: %s", k, v)
+								return nil
+							})
+
+							continue
+						}
+						if op.Cid == nil {
+							log.Warn().Msgf("op.Cid is missing")
+						} else if lexutil.LexLink(rcid) != *op.Cid {
+							log.Info().Err(fmt.Errorf("mismatch in record op and cid: %s != %s", rcid, *op.Cid))
+						}
+
+						if hook.Predicate == nil || hook.Predicate(ctx, commit, op, rec) {
+							hook.Action(ctx, commit, op, rec)
+						}
 					}
 				}()
-
-				if hook.CallPerCommit {
-					if hook.Predicate == nil || hook.Predicate(ctx, e, &comatproto.SyncSubscribeRepos_RepoOp{Action: "commit"}, nil) {
-						hook.Action(ctx, e, nil, nil)
-					}
-					return
+			case e.CursorReset:
+				if hook.OnCursorReset == nil {
+					continue
 				}
-
-				if len(e.Blocks) == 0 {
-					// TODO: allow for the hook to be invoked in this case.
-					return
-				}
-				repo_, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(e.Blocks))
-				if err != nil {
-					log.Error().Err(err).Msgf("ReadRepoFromCar: %s", err)
-					return
-				}
-				for _, op := range e.Ops {
-					log.Trace().Interface("op", op).Msg("Op")
-					collection := strings.Split(op.Path, "/")[0]
-					rcid, rec, err := repo_.GetRecord(ctx, op.Path)
-					if err != nil {
-						log.Trace().Err(err).Msgf("GetRecord(%q)", op.Path)
-
-						log.Trace().Msgf("Signed commit: %+v", repo_.SignedCommit())
-						repo_.ForEach(ctx, collection, func(k string, v cid.Cid) error {
-							log.Trace().Msgf("Key: %q Cid: %s", k, v)
-							return nil
-						})
-
-						continue
-					}
-					if op.Cid == nil {
-						log.Warn().Msgf("op.Cid is missing")
-					} else if lexutil.LexLink(rcid) != *op.Cid {
-						log.Info().Err(fmt.Errorf("mismatch in record op and cid: %s != %s", rcid, *op.Cid))
-					}
-
-					if hook.Predicate == nil || hook.Predicate(ctx, e, op, rec) {
-						hook.Action(ctx, e, op, rec)
-					}
-				}
-			}()
+				wg.Wait() // Ensure that all in-flight calls are finished.
+				hook.OnCursorReset(ctx)
+			}
 		}
 	}
 }

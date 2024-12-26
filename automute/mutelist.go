@@ -121,6 +121,8 @@ func (l *List) Run(ctx context.Context) error {
 					duration, deleted, total)
 
 		case did := <-l.checkQueue:
+			log := log.With().Str("did", did).Logger()
+
 			skip := func(did string) bool {
 				l.mu.Lock()
 				defer l.mu.Unlock()

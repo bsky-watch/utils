@@ -122,12 +122,22 @@ type passwordAuthTokenSource struct {
 
 	Session   comatproto.ServerRefreshSession_Output
 	Timestamp time.Time
+
+	Filename string
 }
 
 func PasswordAuth(login string, password string) oauth2.TokenSource {
 	return &passwordAuthTokenSource{
 		Login:    login,
 		Password: password,
+	}
+}
+
+func PasswordAuthWithFileCache(login string, password string, filename string) oauth2.TokenSource {
+	return &passwordAuthTokenSource{
+		Login:    login,
+		Password: password,
+		Filename: filename,
 	}
 }
 
@@ -139,6 +149,26 @@ func (s *passwordAuthTokenSource) Token() (*oauth2.Token, error) {
 	switch {
 	case s.Timestamp.IsZero():
 		// First request, we don't have any token yet.
+		if s.Filename != "" {
+			err := s.restoreFromFile(s.Filename)
+			if err != nil {
+				// fall through to creating a new session
+			} else {
+				client := NewAnonymousClient(ctx)
+				client.Auth = &xrpc.AuthInfo{
+					AccessJwt: s.Session.AccessJwt,
+					Handle:    s.Session.Handle,
+					Did:       s.Session.Did,
+				}
+				_, err := comatproto.ServerGetSession(ctx, client)
+				if err != nil {
+					// fall through to creating a new session
+				} else {
+					break // exit from switch statement to return the token we just loaded
+				}
+			}
+		}
+
 		client := NewAnonymousClient(ctx)
 		resp, err := comatproto.ServerCreateSession(ctx, client, &comatproto.ServerCreateSession_Input{
 			Identifier: s.Login,
@@ -166,6 +196,7 @@ func (s *passwordAuthTokenSource) Token() (*oauth2.Token, error) {
 		}
 		s.Session = *resp
 		s.Timestamp = time.Now()
+		_ = s.saveToFile(s.Filename)
 	}
 
 	expiry, err := jwtExpirationTime(s.Session.AccessJwt)
@@ -181,4 +212,32 @@ func (s *passwordAuthTokenSource) Token() (*oauth2.Token, error) {
 	}
 
 	return r, nil
+}
+
+func (s *passwordAuthTokenSource) restoreFromFile(filename string) error {
+	b, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Errorf("reading token file %q: %w", filename, err)
+	}
+	tok := &comatproto.ServerRefreshSession_Output{}
+	if err := json.Unmarshal(b, tok); err != nil {
+		return fmt.Errorf("unmarshaling stored token: %w", err)
+	}
+	s.Session = *tok
+	s.Timestamp = time.Now()
+	return nil
+}
+
+func (s *passwordAuthTokenSource) saveToFile(filename string) error {
+	b, err := json.Marshal(s.Session)
+	if err != nil {
+		return fmt.Errorf("failed to marshal the refreshed token: %w", err)
+	}
+	if err := os.WriteFile(filename+".tmp", b, 0600); err != nil {
+		return fmt.Errorf("failed to write the token into a temp file: %w", err)
+	}
+	if err := os.Rename(filename+".tmp", filename); err != nil {
+		return fmt.Errorf("failed to replace the token file: %w", err)
+	}
+	return nil
 }

@@ -34,11 +34,15 @@ func jwtExpirationTime(token string) (time.Time, error) {
 	return time.Unix(int64(data.Expiry), 0), nil
 }
 
-type FileBackedTokenSource struct {
+type fileBackedTokenSource struct {
 	filename string
 }
 
-func (s *FileBackedTokenSource) Token() (*oauth2.Token, error) {
+func SessionFile(filename string) oauth2.TokenSource {
+	return &fileBackedTokenSource{filename: filename}
+}
+
+func (s *fileBackedTokenSource) Token() (*oauth2.Token, error) {
 	b, err := os.ReadFile(s.filename)
 	if err != nil {
 		return nil, fmt.Errorf("reading token file %q: %w", s.filename, err)
@@ -89,11 +93,11 @@ func (s *FileBackedTokenSource) Token() (*oauth2.Token, error) {
 }
 
 func NewHttpClient(ctx context.Context, authfile string) *http.Client {
-	return oauth2.NewClient(ctx, &FileBackedTokenSource{filename: authfile})
+	return oauth2.NewClient(ctx, SessionFile(authfile))
 }
 
 func NewClient(ctx context.Context, authfile string) *xrpc.Client {
-	return NewClientWithTokenSource(ctx, &FileBackedTokenSource{filename: authfile})
+	return NewClientWithTokenSource(ctx, SessionFile(authfile))
 }
 
 func NewAnonymousClient(ctx context.Context) *xrpc.Client {

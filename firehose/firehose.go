@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/ipfs/go-cid"
 	"github.com/rs/zerolog"
+	slogzerolog "github.com/samber/slog-zerolog"
 
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/events"
@@ -141,7 +143,9 @@ func (f *Firehose) Run(ctx context.Context) error {
 			},
 		}
 
-		if err := events.HandleRepoStream(ctx, conn, sequential.NewScheduler(f.ident, callbacks.EventHandler)); err != nil {
+		slogger := slog.New(slogzerolog.Option{Logger: &log}.NewZerologHandler())
+
+		if err := events.HandleRepoStream(ctx, conn, sequential.NewScheduler(f.ident, callbacks.EventHandler), slogger); err != nil {
 			log.Error().Err(err).Msgf("HandleRepoStream error")
 			conn.Close()
 			if ctx.Err() != nil {

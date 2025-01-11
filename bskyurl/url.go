@@ -11,6 +11,11 @@ type Target interface{}
 type TargetWithProfile interface {
 	GetProfile() string
 }
+type TargetRecord interface {
+	TargetWithProfile
+	GetCollection() string
+	GetRKey() string
+}
 
 // DetermineTarget parses a string as a Bluesky-related URL. It recognizes the following inputs:
 //
@@ -78,7 +83,13 @@ type Post struct {
 	Rkey    string
 }
 
-func (p *Post) GetProfile() string { return p.Profile }
+func (p *Post) GetProfile() string    { return p.Profile }
+func (p *Post) GetCollection() string { return "app.bsky.feed.post" }
+func (p *Post) GetRKey() string       { return p.Rkey }
+
+// Ensure that it implements the expected interfaces
+var _ TargetWithProfile = &Post{}
+var _ TargetRecord = &Post{}
 
 type SomeRecord struct {
 	Profile    string
@@ -86,4 +97,10 @@ type SomeRecord struct {
 	Rkey       string
 }
 
-func (r *SomeRecord) GetProfile() string { return r.Profile }
+func (r *SomeRecord) GetProfile() string    { return r.Profile }
+func (r *SomeRecord) GetCollection() string { return r.Collection }
+func (r *SomeRecord) GetRKey() string       { return r.Rkey }
+
+// Ensure that it implements the expected interfaces
+var _ TargetWithProfile = &SomeRecord{}
+var _ TargetRecord = &SomeRecord{}

@@ -36,6 +36,8 @@ func jwtExpirationTime(token string) (time.Time, error) {
 
 type fileBackedTokenSource struct {
 	filename string
+
+	refreshMu sync.Mutex
 }
 
 func SessionFile(filename string) oauth2.TokenSource {
@@ -43,6 +45,9 @@ func SessionFile(filename string) oauth2.TokenSource {
 }
 
 func (s *fileBackedTokenSource) Token() (*oauth2.Token, error) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+
 	b, err := os.ReadFile(s.filename)
 	if err != nil {
 		return nil, fmt.Errorf("reading token file %q: %w", s.filename, err)
@@ -50,6 +55,19 @@ func (s *fileBackedTokenSource) Token() (*oauth2.Token, error) {
 	tok := &comatproto.ServerRefreshSession_Output{}
 	if err := json.Unmarshal(b, tok); err != nil {
 		return nil, fmt.Errorf("unmarshaling stored token: %w", err)
+	}
+
+	expiry, err := jwtExpirationTime(tok.AccessJwt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get expiration time from the access token: %w", err)
+	}
+	if time.Until(expiry) > 5*time.Minute {
+		return &oauth2.Token{
+			TokenType:    "bearer",
+			AccessToken:  tok.AccessJwt,
+			RefreshToken: tok.RefreshJwt,
+			Expiry:       expiry,
+		}, nil
 	}
 
 	client := &xrpc.Client{
@@ -77,7 +95,7 @@ func (s *fileBackedTokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to replace the token file: %w", err)
 	}
 
-	expiry, err := jwtExpirationTime(refresh.AccessJwt)
+	expiry, err = jwtExpirationTime(refresh.AccessJwt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get expiration time from the access token: %w", err)
 	}
